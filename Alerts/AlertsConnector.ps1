@@ -25,15 +25,17 @@ Import-Module SevOne
 Connect-SevOne -ComputerName pdcd18-sevone01a -Credential $SevOneCred
 #endregion Open SevOne Connection
 
+###### Still need filters
+
 #region Draw Sources
 $alerts = Get-SevOneAlert | Where-Object {$_.message -notmatch '\[dev\]'}
-$class = Get-SCClass -Name Microsoft.SystemCenter.WorkItem.SCOMIncident # not this class, use the new sevoneclass
+$class = Get-SCClass -Name SevOne.PAS.WorkIten.SevOneIncident
 $Inc_Hash = @{}
 $incidents = Get-SCClassInstance -Class $class # add filter to only include open incidents
 $incidents | foreach {$Inc_Hash.Add($_.id,$_)}
-$Incidentstobeclosed = Get-SCClassInstance -Class $class #add filter where stats = resolved and AlertStatus = open
+$Incidentstobeclosed = Get-SCClassInstance -Class $class #add filter where status = resolved and AlertStatus = open
 $Dev_hash =@{}
-$Devices = Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
+Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
 
 #endregion Draw Sources
 
@@ -41,7 +43,6 @@ $Devices = Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
 $NewAlerts = $alerts.where{$_.id -notin $incidents.SevOneAlertID}
 foreach ($a in $NewAlerts)
 {
-  $sev = #Something to set valid
   $impact = Get-SCSMEnumeration -Name System.WorkItem.TroubleTicket.ImpactEnum.Medium # might set this on the basis of the object
   $dev = $Dev_hash.item($a.deviceId)
   # I think we'll be ok for now just defaulting to medium
@@ -54,23 +55,25 @@ foreach ($a in $NewAlerts)
     }
   
   $props = @{
-      SevOneAlertID = $a.id
+      ID = "VzISDIR{0}"
+      AlertID = $a.id
       Urgency = $urgency
       Impact = $impact
-      Description = $a.message
-      Source = 'IncidentSourceEnum.System' # statically set to the new SevOneAlert source once it's available
+      Description =  $a.message
+      Source = (Get-SCSMEnumeration -Name "IncidentSourceEnum.System")
       Title = "SevOne: " + $a.message.split('-')[0]
-      SevOneDeviceName = $dev
+      DeviceName = $dev
       SevOneDeviceId = $a.deviceId
-      SevOneSeverity = $a.severity
+      Severity = $a.severity
       AlertStatus = 'Open'
     }
-  #create Incident
+  $incident = New-SCClassInstance -Class $class -Property $props -PassThru
   #return IncidentID
+
 }
 #endregion Write alerts to SM
 
-#region Close Incidents with no Alerts
+#region Close Incidents with nIo Alerts
 $incidents = $incidents.where{$_.SevOneAlertid -notin $alerts.id}
 foreach ($i in $incidents)
   {
