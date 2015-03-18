@@ -31,6 +31,8 @@ catch {
 #region Draw Sources
 Write-Verbose "Building Variables"
 $alerts = Get-SevOneAlert | Where-Object {$_.message -notmatch '\[dev\]'}
+$alerts_Hash = @{}
+$alerts | foreach {$alerts_Hash.Add($_.id,$_)}
 Write-Verbose 'Creating Class object'
 $class = Get-SCClass -Name SevOne.PAS.WorkIten.SevOneIncident
 Write-Debug "ClassName = $($class.Name)"
@@ -95,7 +97,7 @@ foreach ($a in $NewAlerts)
 #endregion Write alerts to SM
 
 #region Close Incidents with no Alerts
-$incidents = $incidents.where{$_.SevOneAlertid -notin $alerts.id}
+$incidents = $incidents | where {$_.SevOneAlertid -notin $alerts.id}
 foreach ($i in $incidents)
   {
     Write-Verbose "Resolving incident for $($i.Id)"
@@ -109,7 +111,7 @@ foreach ($i in $incidents)
 foreach ($i in $Incidentstobeclosed)
   {
     Write-Verbose "Closing SevOne Alert for $($i.Id)"
-    Close-SevOneAlert -Alert $Inc_Hash.item($i.SevOneAlertID) -Message "Closed by Service Manager: $(Get-Date -Format MMddyyy_hhmmss)"
+    Close-SevOneAlert -Alert $alerts_Hash.item($i.AlertID) -Message "Closed by Service Manager: $(Get-Date -Format MMddyyy_hhmmss)"
     $i.AlertStatus = 'Closed'
     $i.overwrite()
   }
