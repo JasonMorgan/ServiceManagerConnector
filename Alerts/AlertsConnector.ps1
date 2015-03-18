@@ -1,13 +1,11 @@
 ﻿#requires -module SMLets
 #requires -module SevOne
 param (
-    [string[]]$SevOneServer = @(
-        'Pdcd18-sevone01a'
-        'Pdcd18-sevone02a'
-        'Ndcd18-sevone01a'
-        'Ndcd18-sevone02a'
-      ),
+    [string]$SevOneServer = 'Pdcd18-sevone01a',
+    [string]$ServiceManagerServer = $env:COMPUTERNAME,
+    [Parameter(Mandatory)]
     [pscredential]$SevOneCred,
+    [Parameter(Mandatory)]
     [pscredential]$ServiceManagerCred
   )
 
@@ -17,75 +15,103 @@ Import-Module SMLets
 Import-Module SevOne
 #endregion import modules
 
-#region Open ServiceManager connection
-### Maybe something goes here
-#endregion Open ServiceManager connection
+#region Open SCSM Connection
+Try {New-SCManagementGroupConnection -ComputerName $ServiceManagerServer -Credential $ServiceManagerCred -ErrorAction Stop}
+catch {Throw "Unable to connect to Service Manager Instance @ $ServiceManagerServer"} 
+#endregion Open SCSM Connection
 
 #region Open SevOne Connection
-Connect-SevOne -ComputerName pdcd18-sevone01a -Credential $SevOneCred
+try {Connect-SevOne -ComputerName $SevOneServer -Credential $SevOneCred -ErrorAction Stop}
+catch {
+    # create incident
+    throw "Failed to connect ot SevOne server @ $SevOneServer"
+  }
 #endregion Open SevOne Connection
 
-###### Still need filters
-
 #region Draw Sources
+Write-Verbose "Building Variables"
 $alerts = Get-SevOneAlert | Where-Object {$_.message -notmatch '\[dev\]'}
+Write-Verbose 'Creating Class object'
 $class = Get-SCClass -Name SevOne.PAS.WorkIten.SevOneIncident
+Write-Debug "ClassName = $($class.Name)"
 $Inc_Hash = @{}
-$incidents = Get-SCClassInstance -Class $class # add filter to only include open incidents
+Write-Verbose 'Collecting open incidents'
+$incidents = Get-SCClassInstance -Class $class -Filter "Status -eq Active"
+Write-Verbose "$($incidents.Count) open incidents found"
+Write-Debug 'Finished collecting open incidents'
 $incidents | foreach {$Inc_Hash.Add($_.id,$_)}
-$Incidentstobeclosed = Get-SCClassInstance -Class $class #add filter where status = resolved and AlertStatus = open
+Write-Verbose 'Collecting Incidents to be closed in SevOne'
+Write-Verbose "Building filter for alerts to be closed"
+$res = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Resolved'
+$closed = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Closed'
+$string = "(Status = '$($res.Id.Guid)' OR Status = '$($closed.id.guid)') AND AlertStatus='Open'"
+$criteria =New-Object -TypeName Microsoft.EnterpriseManagement.Common.EnterpriseManagementObjectCriteria -ArgumentList $string,$class
+Write-Verbose "$($Incidentstobeclosed.Count) INcidents waiting to be closed in SevOne"
+Write-Debug 'Finished Collecting incidents'
+$Incidentstobeclosed = Get-SCClassInstance -Criteria $criteria
+Write-Verbose 'Building Device HashTable'
 $Dev_hash =@{}
 Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
-
+Write-Debug 'Finished building Device HashTable $Dev_hash'
 #endregion Draw Sources
 
 #region Write alerts to SM
 $NewAlerts = $alerts.where{$_.id -notin $incidents.SevOneAlertID}
 foreach ($a in $NewAlerts)
 {
-  $impact = Get-SCSMEnumeration -Name System.WorkItem.TroubleTicket.ImpactEnum.Medium # might set this on the basis of the object
+  $impact = 'System.WorkItem.TroubleTicket.ImpactEnum.Medium' # might set this on the basis of the object
   $dev = $Dev_hash.item($a.deviceId)
   # I think we'll be ok for now just defaulting to medium
   # Alertnatively we could do it based on alert.message
   switch ($a.severity)
     {
-      {$_ -le 3} { $urgency = Get-SCSMEnumeration -Name System.WorkItem.TroubleTicket.UrgencyEnum.High }
-      {$_ -gt 3 -and $_ -le 5} { $urgency = Get-SCSMEnumeration -Name System.WorkItem.TroubleTicket.UrgencyEnum.Medium }
-      {$_ -gt 5} { $urgency = Get-SCSMEnumeration -Name System.WorkItem.TroubleTicket.UrgencyEnum.Low }
+      {$_ -le 3} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.High' }
+      {$_ -gt 3 -and $_ -le 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Medium' }
+      {$_ -gt 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Low' }
     }
   
+
+  # These properties are Case Sensitive!!!!
   $props = @{
-      ID = "VzISDIR{0}"
-      AlertID = $a.id
+      Id = "VzISDIR{0}"
+      AlertID = [int]($a.id)
       Urgency = $urgency
       Impact = $impact
       Description =  $a.message
-      Source = (Get-SCSMEnumeration -Name "IncidentSourceEnum.System")
-      Title = "SevOne: " + $a.message.split('-')[0]
+      Source = 'Enum.c82f352a6ec04f539e7b6174bce07b8b'
+      Title = 'SevOne: ' + $a.message.split('-')[0]
       DeviceName = $dev
-      SevOneDeviceId = $a.deviceId
-      Severity = $a.severity
+      SevOneDeviceID = [int]($a.deviceId)
+      Severity = [int]($a.severity)
       AlertStatus = 'Open'
+      Status = 'IncidentStatusEnum.Active'
     }
-  $incident = New-SCClassInstance -Class $class -Property $props -PassThru
+  Write-Debug "Finished creating properties for alert Id $($a.id)"
+  $incident = New-SCClassInstance -Class $class -Property $props -PassThru -Verbose
   #return IncidentID
-
+  Write-Verbose "New incident created: $($incident.Id)"
+  Write-Debug "Finished creating incident for alert Id $($a.id)"
 }
 #endregion Write alerts to SM
 
-#region Close Incidents with nIo Alerts
+#region Close Incidents with no Alerts
 $incidents = $incidents.where{$_.SevOneAlertid -notin $alerts.id}
 foreach ($i in $incidents)
   {
-    
-    #Resolve incident
+    Write-Verbose "Resolving incident for $($i.Id)"
+    $i.status = 'IncidentStatusEnum.Resolved'
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
   }
 #endregion Close Incidents with no Alerts
 
 #region Close Alerts for resolved incidents
 foreach ($i in $Incidentstobeclosed)
   {
-    Close-SevOneAlert -Alert $Inc_Hash.item($i.SevOneAlertID)
+    Write-Verbose "Closing SevOne Alert for $($i.Id)"
+    Close-SevOneAlert -Alert $Inc_Hash.item($i.SevOneAlertID) -Message "Closed by Service Manager: $(Get-Date -Format MMddyyy_hhmmss)"
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
   }
 #endregion Close Alerts for resolved incidents
 <#
