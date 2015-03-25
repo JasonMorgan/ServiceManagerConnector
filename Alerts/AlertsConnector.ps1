@@ -1,5 +1,4 @@
-﻿#requires -module SMLets
-#requires -module SevOne
+﻿#requires -module SevOne
 param (
     [string]$SevOneServer = 'Pdcd18-sevone01a',
     [string]$ServiceManagerServer = $env:COMPUTERNAME,
