@@ -5,19 +5,23 @@ param (
     [string]$ServiceManagerServer = $env:COMPUTERNAME,
     [Parameter(Mandatory)]
     [pscredential]$SevOneCred,
-    [Parameter(Mandatory)]
-    [pscredential]$ServiceManagerCred
+    [pscredential]$ServiceManCred
   )
-
+  
+ 
 #region import modules
 Import-Module 'D:\Program Files\Microsoft System Center 2012 R2\Service Manager\PowerShell\System.Center.Service.Manager.psd1'
+#Import-Module Microsoft.EnterpriseManagement.Core.Cmdlets -Force
 Import-Module SMLets
 Import-Module SevOne
 #endregion import modules
 
 #region Open SCSM Connection
-Try {New-SCManagementGroupConnection -ComputerName $ServiceManagerServer -Credential $ServiceManagerCred -ErrorAction Stop}
-catch {Throw "Unable to connect to Service Manager Instance @ $ServiceManagerServer"} 
+Try {New-SCManagementGroupConnection -ComputerName $ServiceManagerServer -Credential $ServiceManCred }
+catch {
+    $Error | fl * -Force
+    #$Error | Export-Clixml C:\ISDps\Connectors\errors.xml
+    Throw "Unable to connect to Service Manager Instance @ $ServiceManagerServer"} #>
 #endregion Open SCSM Connection
 
 #region Open SevOne Connection
@@ -58,7 +62,7 @@ Write-Debug 'Finished building Device HashTable $Dev_hash'
 #endregion Draw Sources
 
 #region Write alerts to SM
-$NewAlerts = $alerts.where{$_.id -notin $incidents.SevOneAlertID}
+$NewAlerts = $alerts.where{$_.id -notin $incidents.AlertID}
 foreach ($a in $NewAlerts)
 {
   $impact = 'System.WorkItem.TroubleTicket.ImpactEnum.Medium' # might set this on the basis of the object
@@ -80,7 +84,7 @@ foreach ($a in $NewAlerts)
       Urgency = $urgency
       Impact = $impact
       Description =  $a.message
-      Source = 'Enum.c82f352a6ec04f539e7b6174bce07b8b'
+      #Source = 'Enum.c82f352a6ec04f539e7b6174bce07b8b'
       Title = 'SevOne: ' + $a.message.split('-')[0]
       DeviceName = $dev
       SevOneDeviceID = [int]($a.deviceId)
@@ -88,7 +92,7 @@ foreach ($a in $NewAlerts)
       AlertStatus = 'Open'
       Status = 'IncidentStatusEnum.Active'
     }
-  Write-Debug "Finished creating properties for alert Id $($a.id)"
+  #Write-Debug "Finished creating properties for alert Id $($a.id)"
   $incident = New-SCClassInstance -Class $class -Property $props -PassThru -Verbose
   #return IncidentID
   Write-Verbose "New incident created: $($incident.Id)"
@@ -97,10 +101,11 @@ foreach ($a in $NewAlerts)
 #endregion Write alerts to SM
 
 #region Close Incidents with no Alerts
-$incidents = $incidents | where {$_.SevOneAlertid -notin $alerts.id}
+$incidents = $incidents | where {$_.Alertid -notin $alerts.id}
 foreach ($i in $incidents)
   {
     Write-Verbose "Resolving incident for $($i.Id)"
+    Write-Debug "About to resolve Incident"
     $i.status = 'IncidentStatusEnum.Resolved'
     $i.AlertStatus = 'Closed'
     $i.overwrite()
@@ -116,15 +121,5 @@ foreach ($i in $Incidentstobeclosed)
     $i.overwrite()
   }
 #endregion Close Alerts for resolved incidents
-<#
 
-[int]AlertId
-[string]DeviceName
-[string]DeviceID
-[int]SevOneSeverity
-[string]SevOneAlertStatus #this should have been a duh moment, SevOne's API doesn't allow us to tatoo the alert
-but that doesn't matter if we add this property.  On creation we set the value to open and we only change it 
-after we have successfully sent a close message to SevOne.  I may actually be a genuis because all of my solutions
-involve someone other than me doing the hard work ;)
-
-#>
+exit $LASTEXITCODE

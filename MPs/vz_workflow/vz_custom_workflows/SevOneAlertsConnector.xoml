@@ -1,0 +1,7 @@
+<SequentialWorkflowActivity x:Class="WorkflowAuthoring.SevOneAlertsConnector" x:Name="SevOneAlertsConnector" xmlns:ns0="clr-namespace:Microsoft.ServiceManager.WorkflowAuthoring.ActivityLibrary;Assembly=Microsoft.ServiceManager.WorkflowAuthoring.ActivityLibrary, Version=7.0.5000.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/workflow">
+	<ns0:CommandScript Parameter="{x:Null}" x:Name="RunConnector" PropertyToBind="{x:Null}" ScriptBody="Powershell.exe -command &quot;c:\isdps\Scripts\SevOne\SevOneAlertsConnector.ps1 -SevOneCred (New-Object pscredential -ArgumentList 'admin',(ConvertTo-SecureString -AsPlainText -Force SevOne))&quot; " TaskID="SevOneAlertsConnector.CommandScript.e28d1063_547d_4902_b96b_ddac9eedb1ee" ScriptName="{x:Null}">
+		<ns0:CommandScript.Parameters>
+			<x:Array Type="{x:Type p7:ActivityParameter}" xmlns:p7="clr-namespace:Microsoft.ServiceManager.WorkflowAuthoring.Common;Assembly=Microsoft.ServiceManager.WorkflowAuthoring.Common, Version=7.0.5000.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" />
+		</ns0:CommandScript.Parameters>
+	</ns0:CommandScript>
+</SequentialWorkflowActivity>
