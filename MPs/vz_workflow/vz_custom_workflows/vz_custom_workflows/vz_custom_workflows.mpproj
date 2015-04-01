@@ -30,6 +30,12 @@
     <AssemblyOriginatorKeyFile />
   </PropertyGroup>
   <ItemGroup>
+    <ManagementPackReference Include="Microsoft.EnterpriseManagement.ServiceManager.UI.Console">
+      <HintPath>C:\MPs\Library\Microsoft.EnterpriseManagement.ServiceManager.UI.Console.mp</HintPath>
+      <Alias>Console</Alias>
+      <MinVersion>7.5.2905.0</MinVersion>
+      <PackageToBundle>False</PackageToBundle>
+    </ManagementPackReference>
     <ManagementPackReference Include="Microsoft.SystemCenter.Library">
       <Alias>SC</Alias>
       <PackageToBundle>False</PackageToBundle>
@@ -38,6 +44,11 @@
       <Alias>System</Alias>
       <PackageToBundle>False</PackageToBundle>
     </ManagementPackReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Workflows.mpx">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath)\Microsoft\VSAC\Microsoft.SystemCenter.OperationsManager.targets" />
 </Project>
