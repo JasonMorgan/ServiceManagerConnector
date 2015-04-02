@@ -1,0 +1,342 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ManagementPackFragment SchemaVersion="2.0" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <TypeDefinitions>
+    <SecureReferences>
+      <SecureReference ID="SevOne.BasicAccount" Accessibility="Public" Context="System!System.Entity" />
+    </SecureReferences>
+  </TypeDefinitions>
+  <Categories>
+    <Category ID="vz_custom_workflows.Category" Value="Console!Microsoft.EnterpriseManagement.ServiceManager.ManagementPack">
+      <ManagementPackName>vz_custom_workflows</ManagementPackName>
+      <ManagementPackVersion>1.0.0.0</ManagementPackVersion>
+    </Category>
+    <Category ID="SevOneAlertsConnectorCategory" Target="SevOneAlertsConnector" Value="EnterpriseManagement!Microsoft.EnterpriseManagement.ServiceManager.Rules.WorkflowSubscriptions" />
+  </Categories>
+  <Monitoring>
+    <Rules>
+      <Rule ID="SevOneAlertsConnector" Enabled="true" Target="SystemCenter!Microsoft.SystemCenter.SubscriptionWorkflowTarget" ConfirmDelivery="false" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Notification</Category>
+        <DataSources>
+          <DataSource ID="SchedulerDS" RunAs="SystemCenter!Microsoft.SystemCenter.DatabaseWriteActionAccount" TypeID="System!System.Scheduler">
+            <Scheduler>
+              <SimpleReccuringSchedule>
+                <Interval Unit="Seconds">30</Interval>
+              </SimpleReccuringSchedule>
+              <ExcludeDates />
+            </Scheduler>
+          </DataSource>
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="WA" TypeID="System!System.CommandExecuter">
+            <!--This write action will launch my PowerShell Script-->
+            <ApplicationName>%windir%\system32\WindowsPowerShell\v1.0\powershell.exe</ApplicationName>
+            <WorkingDirectory />
+            <CommandLine>-NoLogo -NoProfile -Noninteractive ". '$File/SevOneConnector.ps1$'"</CommandLine>
+            <TimeoutSeconds>120</TimeoutSeconds>
+            <RequireOutput>true</RequireOutput>
+            <Files>
+              <File>
+                <Name>SevOneConnector.ps1</Name>
+                <Contents>
+                  <![CDATA[
+#requires -module SevOne
+param (
+    [string]$SevOneServer = 'Pdcd18-sevone01a',
+    [string]$ServiceManagerServer = $env:COMPUTERNAME,
+    [Parameter(Mandatory)]
+    [pscredential]$SevOneCred = (New-Object System.Management.Automation.PSCredential ("$RunAs[Name="SevOne.BasicAccount"]/UserName$", (ConvertTo-SecureString -AsPlainText -Force -String '$RunAs[Name="SevOne.BasicAccount"]/Password$')))
+  )
+  
+ 
+#region import modules
+Import-Module 'D:\Program Files\Microsoft System Center 2012 R2\Service Manager\PowerShell\System.Center.Service.Manager.psd1'
+#Import-Module Microsoft.EnterpriseManagement.Core.Cmdlets -Force
+Import-Module SMLets
+Import-Module SevOne
+#endregion import modules
+
+#region Open SCSM Connection
+Try {New-SCManagementGroupConnection -ComputerName $ServiceManagerServer }
+catch {
+    $Error | fl * -Force
+    #$Error | Export-Clixml C:\ISDps\Connectors\errors.xml
+    Throw "Unable to connect to Service Manager Instance @ $ServiceManagerServer"} #>
+#endregion Open SCSM Connection
+
+#region Open SevOne Connection
+try {Connect-SevOne -ComputerName $SevOneServer -Credential $SevOneCred -ErrorAction Stop}
+catch {
+    # create incident
+    throw "Failed to connect ot SevOne server @ $SevOneServer"
+  }
+#endregion Open SevOne Connection
+
+#region Draw Sources
+Write-Verbose "Building Variables"
+$alerts = Get-SevOneAlert | Where-Object {$_.message -notmatch '\[dev\]'}
+$alerts_Hash = @{}
+$alerts | foreach {$alerts_Hash.Add($_.id,$_)}
+Write-Verbose 'Creating Class object'
+$class = Get-SCClass -Name SevOne.PAS.WorkIten.SevOneIncident
+Write-Debug "ClassName = $($class.Name)"
+$Inc_Hash = @{}
+Write-Verbose 'Collecting open incidents'
+$incidents = Get-SCClassInstance -Class $class -Filter "Status -eq Active"
+Write-Verbose "$($incidents.Count) open incidents found"
+Write-Debug 'Finished collecting open incidents'
+$incidents | foreach {$Inc_Hash.Add($_.id,$_)}
+Write-Verbose 'Collecting Incidents to be closed in SevOne'
+Write-Verbose "Building filter for alerts to be closed"
+$res = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Resolved'
+$closed = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Closed'
+$string = "(Status = '$($res.Id.Guid)' OR Status = '$($closed.id.guid)') AND AlertStatus='Open'"
+$criteria =New-Object -TypeName Microsoft.EnterpriseManagement.Common.EnterpriseManagementObjectCriteria -ArgumentList $string,$class
+Write-Verbose "$($Incidentstobeclosed.Count) INcidents waiting to be closed in SevOne"
+Write-Debug 'Finished Collecting incidents'
+$Incidentstobeclosed = Get-SCClassInstance -Criteria $criteria
+Write-Verbose 'Building Device HashTable'
+$Dev_hash =@{}
+Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
+Write-Debug 'Finished building Device HashTable $Dev_hash'
+#endregion Draw Sources
+
+#region Write alerts to SM
+$NewAlerts = $alerts.where{$_.id -notin $incidents.AlertID}
+foreach ($a in $NewAlerts)
+{
+  $impact = 'System.WorkItem.TroubleTicket.ImpactEnum.Medium' # might set this on the basis of the object
+  $dev = $Dev_hash.item($a.deviceId)
+  # I think we'll be ok for now just defaulting to medium
+  # Alertnatively we could do it based on alert.message
+  switch ($a.severity)
+    {
+      {$_ -le 3} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.High' }
+      {$_ -gt 3 -and $_ -le 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Medium' }
+      {$_ -gt 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Low' }
+    }
+  
+
+  # These properties are Case Sensitive!!!!
+  $props = @{
+      Id = "VzISDIR{0}"
+      AlertID = [int]($a.id)
+      Urgency = $urgency
+      Impact = $impact
+      Description =  $a.message
+      #Source = 'Enum.c82f352a6ec04f539e7b6174bce07b8b'
+      Title = 'SevOne: ' + $a.message.split('-')[0]
+      DeviceName = $dev
+      SevOneDeviceID = [int]($a.deviceId)
+      Severity = [int]($a.severity)
+      AlertStatus = 'Open'
+      Status = 'IncidentStatusEnum.Active'
+    }
+  #Write-Debug "Finished creating properties for alert Id $($a.id)"
+  $incident = New-SCClassInstance -Class $class -Property $props -PassThru -Verbose
+  #return IncidentID
+  Write-Verbose "New incident created: $($incident.Id)"
+  Write-Debug "Finished creating incident for alert Id $($a.id)"
+}
+#endregion Write alerts to SM
+
+#region Close Incidents with no Alerts
+$incidents = $incidents | where {$_.Alertid -notin $alerts.id}
+foreach ($i in $incidents)
+  {
+    Write-Verbose "Resolving incident for $($i.Id)"
+    Write-Debug "About to resolve Incident"
+    $i.status = 'IncidentStatusEnum.Resolved'
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
+  }
+#endregion Close Incidents with no Alerts
+
+#region Close Alerts for resolved incidents
+foreach ($i in $Incidentstobeclosed)
+  {
+    Write-Verbose "Closing SevOne Alert for $($i.Id)"
+    Close-SevOneAlert -Alert $alerts_Hash.item($i.AlertID) -Message "Closed by Service Manager: $(Get-Date -Format MMddyyy_hhmmss)"
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
+  }
+#endregion Close Alerts for resolved incidents
+
+exit $LASTEXITCODE
+                  ]]>
+                </Contents>
+              </File>
+            </Files>
+          </WriteAction>
+        </WriteActions>
+      </Rule>
+    </Rules>
+    <Tasks>
+      <Task ID="SevOneAlertsConnector.CommandScript.e28d1063_547d_4902_b96b_ddac9eedb1ee" Accessibility="Public" Enabled="true" Target="Windows!Microsoft.Windows.Computer" Timeout="300" Remotable="true">
+        <Category>Notification</Category>
+        <WriteAction ID="WA" TypeID="System!System.CommandExecuter">
+          <!--This write action will launch my PowerShell Script-->
+          <ApplicationName>%windir%\system32\WindowsPowerShell\v1.0\powershell.exe</ApplicationName>
+          <WorkingDirectory />
+          <CommandLine>-NoLogo -NoProfile -Noninteractive ". '$File/SevOneConnector.ps1$'"</CommandLine>
+          <TimeoutSeconds>120</TimeoutSeconds>
+          <RequireOutput>true</RequireOutput>
+          <Files>
+            <File>
+              <Name>SevOneConnector.ps1</Name>
+              <Contents>
+                <![CDATA[
+#requires -module SevOne
+param (
+    [string]$SevOneServer = 'Pdcd18-sevone01a',
+    [string]$ServiceManagerServer = $env:COMPUTERNAME,
+    [Parameter(Mandatory)]
+    [pscredential]$SevOneCred = (New-Object System.Management.Automation.PSCredential ("$RunAs[Name="SevOne.BasicAccount"]/UserName$", (ConvertTo-SecureString -AsPlainText -Force -String '$RunAs[Name="SevOne.BasicAccount"]/Password$')))
+  )
+  
+ 
+#region import modules
+Import-Module 'D:\Program Files\Microsoft System Center 2012 R2\Service Manager\PowerShell\System.Center.Service.Manager.psd1'
+#Import-Module Microsoft.EnterpriseManagement.Core.Cmdlets -Force
+Import-Module SMLets
+Import-Module SevOne
+#endregion import modules
+
+#region Open SCSM Connection
+Try {New-SCManagementGroupConnection -ComputerName $ServiceManagerServer }
+catch {
+    $Error | fl * -Force
+    #$Error | Export-Clixml C:\ISDps\Connectors\errors.xml
+    Throw "Unable to connect to Service Manager Instance @ $ServiceManagerServer"} #>
+#endregion Open SCSM Connection
+
+#region Open SevOne Connection
+try {Connect-SevOne -ComputerName $SevOneServer -Credential $SevOneCred -ErrorAction Stop}
+catch {
+    # create incident
+    throw "Failed to connect ot SevOne server @ $SevOneServer"
+  }
+#endregion Open SevOne Connection
+
+#region Draw Sources
+Write-Verbose "Building Variables"
+$alerts = Get-SevOneAlert | Where-Object {$_.message -notmatch '\[dev\]'}
+$alerts_Hash = @{}
+$alerts | foreach {$alerts_Hash.Add($_.id,$_)}
+Write-Verbose 'Creating Class object'
+$class = Get-SCClass -Name SevOne.PAS.WorkIten.SevOneIncident
+Write-Debug "ClassName = $($class.Name)"
+$Inc_Hash = @{}
+Write-Verbose 'Collecting open incidents'
+$incidents = Get-SCClassInstance -Class $class -Filter "Status -eq Active"
+Write-Verbose "$($incidents.Count) open incidents found"
+Write-Debug 'Finished collecting open incidents'
+$incidents | foreach {$Inc_Hash.Add($_.id,$_)}
+Write-Verbose 'Collecting Incidents to be closed in SevOne'
+Write-Verbose "Building filter for alerts to be closed"
+$res = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Resolved'
+$closed = Get-SCSMEnumeration -Name 'IncidentStatusEnum.Closed'
+$string = "(Status = '$($res.Id.Guid)' OR Status = '$($closed.id.guid)') AND AlertStatus='Open'"
+$criteria =New-Object -TypeName Microsoft.EnterpriseManagement.Common.EnterpriseManagementObjectCriteria -ArgumentList $string,$class
+Write-Verbose "$($Incidentstobeclosed.Count) INcidents waiting to be closed in SevOne"
+Write-Debug 'Finished Collecting incidents'
+$Incidentstobeclosed = Get-SCClassInstance -Criteria $criteria
+Write-Verbose 'Building Device HashTable'
+$Dev_hash =@{}
+Get-SevOneDevice | foreach {$Dev_hash.Add($_.id,$_.name)}
+Write-Debug 'Finished building Device HashTable $Dev_hash'
+#endregion Draw Sources
+
+#region Write alerts to SM
+$NewAlerts = $alerts.where{$_.id -notin $incidents.AlertID}
+foreach ($a in $NewAlerts)
+{
+  $impact = 'System.WorkItem.TroubleTicket.ImpactEnum.Medium' # might set this on the basis of the object
+  $dev = $Dev_hash.item($a.deviceId)
+  # I think we'll be ok for now just defaulting to medium
+  # Alertnatively we could do it based on alert.message
+  switch ($a.severity)
+    {
+      {$_ -le 3} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.High' }
+      {$_ -gt 3 -and $_ -le 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Medium' }
+      {$_ -gt 5} { $urgency = 'System.WorkItem.TroubleTicket.UrgencyEnum.Low' }
+    }
+  
+
+  # These properties are Case Sensitive!!!!
+  $props = @{
+      Id = "VzISDIR{0}"
+      AlertID = [int]($a.id)
+      Urgency = $urgency
+      Impact = $impact
+      Description =  $a.message
+      #Source = 'Enum.c82f352a6ec04f539e7b6174bce07b8b'
+      Title = 'SevOne: ' + $a.message.split('-')[0]
+      DeviceName = $dev
+      SevOneDeviceID = [int]($a.deviceId)
+      Severity = [int]($a.severity)
+      AlertStatus = 'Open'
+      Status = 'IncidentStatusEnum.Active'
+    }
+  #Write-Debug "Finished creating properties for alert Id $($a.id)"
+  $incident = New-SCClassInstance -Class $class -Property $props -PassThru -Verbose
+  #return IncidentID
+  Write-Verbose "New incident created: $($incident.Id)"
+  Write-Debug "Finished creating incident for alert Id $($a.id)"
+}
+#endregion Write alerts to SM
+
+#region Close Incidents with no Alerts
+$incidents = $incidents | where {$_.Alertid -notin $alerts.id}
+foreach ($i in $incidents)
+  {
+    Write-Verbose "Resolving incident for $($i.Id)"
+    Write-Debug "About to resolve Incident"
+    $i.status = 'IncidentStatusEnum.Resolved'
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
+  }
+#endregion Close Incidents with no Alerts
+
+#region Close Alerts for resolved incidents
+foreach ($i in $Incidentstobeclosed)
+  {
+    Write-Verbose "Closing SevOne Alert for $($i.Id)"
+    Close-SevOneAlert -Alert $alerts_Hash.item($i.AlertID) -Message "Closed by Service Manager: $(Get-Date -Format MMddyyy_hhmmss)"
+    $i.AlertStatus = 'Closed'
+    $i.overwrite()
+  }
+#endregion Close Alerts for resolved incidents
+
+exit $LASTEXITCODE
+                  ]]>
+              </Contents>
+            </File>
+          </Files>
+        </WriteAction>
+      </Task>
+    </Tasks>
+  </Monitoring>
+  <LanguagePacks>
+    <LanguagePack ID="ENU" IsDefault="true">
+      <DisplayStrings>
+        <DisplayString ElementID="vz_custom_workflows">
+          <Name>vz_custom_workflows</Name>
+        </DisplayString>
+        <DisplayString ElementID="SevOne.BasicAccount">
+          <Name>SevOne Basic Authentication Account</Name>
+        </DisplayString>
+        <DisplayString ElementID="SevOneAlertsConnector">
+          <Name>SevOneAlertsConnector</Name>
+          <Description>Used to connect to a SevOne Instance</Description>
+        </DisplayString>
+        <DisplayString ElementID="SevOneAlertsConnector" SubElementID="WA">
+          <Name>Used to connect to a SevOne Instance</Name>
+          <Description>Used to connect to a SevOne Instance</Description>
+        </DisplayString>
+        <DisplayString ElementID="SevOneAlertsConnector.CommandScript.e28d1063_547d_4902_b96b_ddac9eedb1ee">
+          <Name>SevOneAlertsConnector.CommandScript.e28d1063_547d_4902_b96b_ddac9eedb1ee</Name>
+        </DisplayString>
+      </DisplayStrings>
+    </LanguagePack>
+  </LanguagePacks>
+</ManagementPackFragment>
